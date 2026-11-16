@@ -1,0 +1,4 @@
+sqlalchemy_materialize.egg*
+*_pycache_*
+*.venv*
+dist
