@@ -15,23 +15,15 @@ class MaterializeDialect_psycopg2(
     supports_statement_cache = False
 
     # get_columns, get_indexes, get_foreign_keys are just wrapper that calls
-    # the get_multi_xxx version of them
-
-    def get_multi_columns(self, connection, schema, filter_names, scope, kind, **kw):
-        pass
-    
+    # the get_multi_xxx version of them    
   
-    def get_multi_indexes(
-        self, connection, schema, filter_names, scope, kind, **kw
-    ):
-        '''
-        Returns: An iterable of ((schema, table_name), list of reflected index dictionaries) pairs.
+    # Helper function. Needed for filtering relations for get_multi_columns and get_multi_indexes
+    def _get_relation_ids(self, connection, schema, filter_names, scope, kind):
+        """Return a name-to-ID mapping filtered by schema, names, scope, and kind.
 
-        Replace the pg_opclass dependency in index reflection.
-
-        PostgreSQL reference:
-        https://github.com/sqlalchemy/sqlalchemy/blob/main/lib/sqlalchemy/dialects/postgresql/base.py
-        '''
+        Prefer temporary relations when matching names overlap.
+        """
+        # Select catalogs for the requested relation kinds.
         catalogs = [
             catalog
             for object_kind, catalog in (
@@ -41,13 +33,13 @@ class MaterializeDialect_psycopg2(
             )
             if object_kind in kind
         ]
+        
         if not catalogs or not scope:
-            return {}.items()
+            return {}
 
         # Unqualified names follow search-path visibility, including session
         # temporary objects. Explicit schemas still exclude other sessions' temps.
         
-        # TODO: Nested ternary. May need to refactor, but should be good for now
         schema_filter = (
             "(r.schema_id = '0' OR pg_table_is_visible(r.oid))"
             if schema is None
@@ -55,14 +47,15 @@ class MaterializeDialect_psycopg2(
             if schema == "mz_temp"
             else "s.name = :schema"
         )
+        
+        # Add scope filter based on 'scope'
+        # In Materialize, schema_id of temp table is '0'
         scope_filter = "TRUE"
         if scope == ObjectScope.DEFAULT:
             scope_filter = "r.schema_id <> '0'"
         elif scope == ObjectScope.TEMPORARY:
             scope_filter = "r.schema_id = '0'"
 
-        # TODO: Problem when tmp has the same name as non tmp table
-        # Suggested solution: Take one :D but not both
         
         # Catalog identifiers come only from the fixed mapping above.
         relations_sql = " UNION ALL ".join(
@@ -70,7 +63,7 @@ class MaterializeDialect_psycopg2(
             for catalog in catalogs
         )
         existing_relations = connection.execute(text(f"""
-            SELECT r.id, r.name
+            SELECT r.id, r.name, r.schema_id = '0' AS is_temp
             FROM ({relations_sql}) AS r
             LEFT JOIN mz_catalog.mz_schemas AS s ON r.schema_id = s.id
             LEFT JOIN mz_catalog.mz_databases AS d ON s.database_id = d.id
@@ -78,20 +71,95 @@ class MaterializeDialect_psycopg2(
                 AND (d.name = current_database() 
                     OR r.schema_id = '0')
         """), {"schema": schema}).mappings().all()
-        existing_tables = {row["name"] for row in existing_relations}
+        
+        
+        # If there's two tables of the same name i.e. one is TEMP
+        # pick the TEMP one.
+    
+        relation_id_by_name = {}
+        for row in existing_relations:
+            if row["name"] in relation_id_by_name:
+                relation_id_by_name[row["name"]] = row["id"] if row["is_temp"] else relation_id_by_name[row["name"]]
+            else:
+                relation_id_by_name[row["name"]] = row["id"]
         
         if filter_names is None:
-            filter_names = sorted(existing_tables)
+            filter_names = sorted(relation_id_by_name)
         else:
-            filter_names = sorted(existing_tables.intersection(filter_names))
-        relation_ids = [
-            row["id"] for row in existing_relations
-            if row["name"] in filter_names
-        ]
+            filter_names = sorted(set(relation_id_by_name).intersection(filter_names))
+        
+        return {name: relation_id_by_name[name] for name in filter_names}
 
+
+    
+    def get_multi_columns(self, connection, schema, filter_names, scope, kind, **kw):
+        """Return ((schema, relation_name), columns) pairs for matching relations."""
+        relation_id_by_name = self._get_relation_ids(
+            connection, schema, filter_names, scope, kind
+        )
+        if not relation_id_by_name:
+            return {}.items()
+        relation_ids = list(relation_id_by_name.values())
+        name_by_id = {rel_id: name for name, rel_id in relation_id_by_name.items()}
+        columns = {(schema, name): [] for name in relation_id_by_name}
+        
+        query = text("""
+            SELECT
+                id, name, format_type(type_oid, type_mod) AS type, nullable, "default"
+            FROM mz_catalog.mz_columns
+            WHERE id IN :relation_ids
+            ORDER BY id, position
+        """).bindparams(bindparam("relation_ids", expanding=True))
+        
+        result = connection.execute(query, {
+            "relation_ids": relation_ids,
+        }).mappings().all()
+
+        for row in result:
+            relation_name = name_by_id[row["id"]]
+            columns[(schema, relation_name)].append({
+                "name": row["name"],
+                # This parser converts type strings without querying PG catalogs.
+                # Unknown Materialize-specific types warn and become NullType.
+                "type": self._reflect_type(
+                    row["type"], {}, {},
+                    type_description=f"column '{relation_name}.{row['name']}'",
+                    collation=None,
+                ),
+                "nullable": bool(row["nullable"]),
+                "default": row["default"],
+            })
+        return columns.items()
+
+    def get_multi_indexes(
+        self, connection, schema, filter_names, scope, kind, **kw
+    ):
+        """Reflect indexes for relations matching the requested filters.
+
+        @param connection: SQLAlchemy connection used to query the catalogs.
+        @param schema: Schema to inspect, or None for unqualified-name lookup.
+        @param filter_names: Relation names to include, or None for all relations
+            matching the schema, scope, and kind filters.
+        @param scope: ObjectScope flag selecting non-temporary objects,
+            temporary objects, or both.
+        @param kind: ObjectKind flag selecting tables, views, materialized views,
+            or a combination of these kinds.
+        @param kw: Additional keyword arguments supplied by SQLAlchemy.
+        @return: An iterable of ((schema, table_name), indexes) pairs, where
+            indexes is a list of reflected index dictionaries. Relations without
+            indexes are included with an empty list.
+        """
+
+        relation_id_by_name = self._get_relation_ids(
+            connection, schema, filter_names, scope, kind
+        )
+        if not relation_id_by_name:
+            return {}.items()
+        filter_names = list(relation_id_by_name)
+        relation_ids = list(relation_id_by_name.values())
 
         # Query
-        # TODO: Refactor aka move to psycopg2, make _xxxx_query
+        # TODO: Refactor by moving query to psycopg2.py, make _xxxx_query
         query = text("""
             SELECT
                 r.name AS table_name,
