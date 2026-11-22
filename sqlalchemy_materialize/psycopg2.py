@@ -1,6 +1,5 @@
 from sqlalchemy import bindparam, text
 
-# sqlalchemy_materialize/psycopg2.py
 from sqlalchemy.dialects.postgresql.psycopg2 import PGDialect_psycopg2
 from sqlalchemy.engine.reflection import ObjectKind, ObjectScope
 
@@ -14,16 +13,13 @@ class MaterializeDialect_psycopg2(
     driver = "psycopg2"
     supports_statement_cache = False
 
-    # get_columns, get_indexes, get_foreign_keys are just wrapper that calls
-    # the get_multi_xxx version of them    
+    # Inherited single-relation reflection methods delegate to get_multi_* methods.
   
-    # Helper function. Needed for filtering relations for get_multi_columns and get_multi_indexes
     def _get_relation_ids(self, connection, schema, filter_names, scope, kind):
         """Return a name-to-ID mapping filtered by schema, names, scope, and kind.
 
         Prefer temporary relations when matching names overlap.
         """
-        # Select catalogs for the requested relation kinds.
         catalogs = [
             catalog
             for object_kind, catalog in (
@@ -37,8 +33,8 @@ class MaterializeDialect_psycopg2(
         if not catalogs or not scope:
             return {}
 
-        # Unqualified names follow search-path visibility, including session
-        # temporary objects. Explicit schemas still exclude other sessions' temps.
+        # Temporary relations use schema_id '0' and need an explicit match
+        # because pg_table_is_visible returns NULL for them.
         
         schema_filter = (
             "(r.schema_id = '0' OR pg_table_is_visible(r.oid))"
@@ -48,8 +44,6 @@ class MaterializeDialect_psycopg2(
             else "s.name = :schema"
         )
         
-        # Add scope filter based on 'scope'
-        # In Materialize, schema_id of temp table is '0'
         scope_filter = "TRUE"
         if scope == ObjectScope.DEFAULT:
             scope_filter = "r.schema_id <> '0'"
@@ -73,8 +67,7 @@ class MaterializeDialect_psycopg2(
         """), {"schema": schema}).mappings().all()
         
         
-        # If there's two tables of the same name i.e. one is TEMP
-        # pick the TEMP one.
+        # Temporary relations take precedence when names overlap.
     
         relation_id_by_name = {}
         for row in existing_relations:
@@ -89,7 +82,6 @@ class MaterializeDialect_psycopg2(
             filter_names = sorted(set(relation_id_by_name).intersection(filter_names))
         
         return {name: relation_id_by_name[name] for name in filter_names}
-
 
     
     def get_multi_columns(self, connection, schema, filter_names, scope, kind, **kw):
@@ -131,6 +123,7 @@ class MaterializeDialect_psycopg2(
             })
         return columns.items()
 
+
     def get_multi_indexes(
         self, connection, schema, filter_names, scope, kind, **kw
     ):
@@ -158,8 +151,6 @@ class MaterializeDialect_psycopg2(
         filter_names = list(relation_id_by_name)
         relation_ids = list(relation_id_by_name.values())
 
-        # Query
-        # TODO: Refactor by moving query to psycopg2.py, make _xxxx_query
         query = text("""
             SELECT
                 r.name AS table_name,
@@ -196,16 +187,15 @@ class MaterializeDialect_psycopg2(
             col_name = row["column_name"]
             on_exp = row["on_expression"]
             
-            # "Expressions" can't be None, instead change it to its column name
+            # Mixed indexes need an expression entry for each indexed column.
             on_exp = on_exp if on_exp is not None else col_name
             
             
             if prev_table_name != table_name:
                 parsed[(schema, table_name)] = [] 
                 
-            # Check if the column belongs to the previous index (multi-column index)
+            # The query orders rows by table, index, and index column position.
             if prev_id != index_id:
-                # Base format to be filled after
                 parsed[(schema, table_name)].append(
                     {
                         "name": name,       
@@ -216,39 +206,26 @@ class MaterializeDialect_psycopg2(
                 )
                 
                 
-            # Works for both multi-col-index and single-col-index
             parsed[(schema, table_name)][-1]["column_names"].append(col_name)
             parsed[(schema, table_name)][-1]["expressions"].append(on_exp)
                 
             prev_id = index_id
             prev_table_name = table_name
         
-        # Remove expressions if there's None
+        # Only expression indexes need expressions; plain columns suffice otherwise.
         for indexes in parsed.values():
             for index in indexes:
                 if None not in index["column_names"]:
                     del index["expressions"]
     
-        # TODO: Could be refactored, maybe put it at top
-        # Add the key, value pair for table with no index
+        # Include matching relations even when the index query returned no rows.
         for table_name in filter_names:
             if (schema, table_name) not in parsed:
                 parsed[(schema, table_name)] = []
             
         return parsed.items()
             
-        
-
-    # get_pk_constraint still uses supported pg_catalog's table, so we can omit this
-    # def get_pk_constraint(self, connection, table_name, schema=None, **kw):
-    #     '''
-    #     Materialize doesn't support primary key for tables built in Materialize.
-    #     For other database like PostgreSQL, MySQL that is upstreamed to Materialize,
-    #     you should connect directly to it with its corresponding SQLALchemy dialect
-    #     '''
-    #     return []   
-    
-
+            
     def get_multi_check_constraints(self, connection, schema, filter_names, scope, kind, **kw):
         '''
         Materialize doesn't support constraint for tables built in Materialize.

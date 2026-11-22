@@ -1,6 +1,7 @@
-# setup.py
 from setuptools import find_packages, setup
 
+
+# Increment the version every upload
 setup(
     name="sqlalchemy-materialize",
     version="0.1.3",
