@@ -71,6 +71,7 @@ in passwords without manual URL encoding.
 | Relation filtering | Supports schema, relation-name, object-kind, and temporary-object scope filters for column and index reflection. |
 | Tables and views | Reflection lookup supports tables, views, and materialized views. |
 | Constraint reflection | Returns empty check-constraint and foreign-key lists for matching Materialize relations. |
+| Statement caching | Enables SQLAlchemy's compiled SQL cache. Query results are not cached. |
 
 For example, inspect an existing relation using a configured engine:
 
@@ -95,7 +96,6 @@ before disposing of the engine.
   relations. To inspect constraints in an upstream database, connect directly to
   it using its corresponding dialect.
 - This dialect raises `NotImplementedError` for two-phase commit recovery.
-- SQLAlchemy statement caching is disabled for this dialect.
 
 ---
 
@@ -113,6 +113,28 @@ Run the tests:
 ```bash
 python -m pytest
 ```
+
+### Statement-cache tests
+
+`tests/test_statement_cache.py` checks compilation reuse with changing pagination
+values and expanding `IN` lists. These tests use SQLAlchemy's internal compilation
+API to compare cached parameters with freshly compiled statements.
+
+Optional read-only tests check actual cache misses and hits through a real
+Materialize connection and compare results with caching disabled. They cover
+changing scalar parameters, pagination, expanding `IN` lists (including empty
+lists), integer/string/boolean/numeric/date values, and column/index reflection.
+Set a connection URL for a test instance to run them:
+
+```bash
+export MATERIALIZE_TEST_URL='materialize+psycopg2://USER:PASSWORD@HOST:6875/materialize?sslmode=require'
+python -m pytest tests/test_statement_cache.py -v
+```
+
+URL-encode special characters in credentials when using this URL string. Without
+`MATERIALIZE_TEST_URL`, the live tests are skipped. The reflection test needs at
+least one existing table or view visible to the connected user, and skips if none
+is available. The tests do not create or modify database objects.
 
 ---
 

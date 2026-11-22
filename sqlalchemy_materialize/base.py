@@ -3,7 +3,7 @@ from sqlalchemy.dialects.postgresql.base import PGDialect
 
 class MaterializeDialect(PGDialect):
     name = "materialize"
-    supports_statement_cache = False
+    supports_statement_cache = True
 
 
     def do_recover_twophase(self, connection):
