@@ -249,13 +249,16 @@ class MaterializeDialect_psycopg2(
     #     return []   
     
 
-    def get_multi_check_constraints(self, connection, table_name, schema=None, **kw):
+    def get_multi_check_constraints(self, connection, schema, filter_names, scope, kind, **kw):
         '''
         Materialize doesn't support constraint for tables built in Materialize.
         For other database like PostgreSQL, MySQL that is upstreamed to Materialize,
         you should connect directly to it with its corresponding SQLALchemy dialect
         '''
-        return []  
+        relation_id_by_name = self._get_relation_ids(
+            connection, schema, filter_names, scope, kind
+        )
+        return {(schema, name): [] for name in relation_id_by_name}.items()
 
 
     def get_multi_foreign_keys(
@@ -267,4 +270,7 @@ class MaterializeDialect_psycopg2(
         For other database like PostgreSQL, MySQL that is upstreamed to Materialize,
         you should connect directly to it with its corresponding SQLALchemy dialect
         '''
-        return []
+        relation_id_by_name = self._get_relation_ids(
+            connection, schema, filter_names, scope, kind
+        )
+        return {(schema, name): [] for name in relation_id_by_name}.items()
