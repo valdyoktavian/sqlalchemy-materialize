@@ -11,7 +11,7 @@ class MaterializeDialect_psycopg2(
     PGDialect_psycopg2,
 ):
     driver = "psycopg2"
-    supports_statement_cache = False
+    supports_statement_cache = True
 
     # Inherited single-relation reflection methods delegate to get_multi_* methods.
   
