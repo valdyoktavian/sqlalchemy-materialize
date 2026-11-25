@@ -6,7 +6,7 @@ from setuptools import find_packages, setup
 # Increment the version every upload
 setup(
     name="sqlalchemy-materialize",
-    version="0.1.4",
+    version="0.1.5",
     description="A SQLAlchemy dialect for Materialize",
     long_description=Path(__file__).with_name("README.md").read_text(encoding="utf-8"),
     long_description_content_type="text/markdown",
