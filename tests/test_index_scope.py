@@ -92,6 +92,7 @@ def catalog_connection():
             "mz_databases": "id TEXT, oid INTEGER, name TEXT",
             "mz_schemas": "id TEXT, oid INTEGER, database_id TEXT, name TEXT",
             "mz_tables": relation_cols,
+            "mz_sources": relation_cols,
             "mz_views": relation_cols,
             "mz_materialized_views": relation_cols,
             "mz_relations": relation_cols + ", type TEXT",

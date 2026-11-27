@@ -24,6 +24,8 @@ class MaterializeDialect_psycopg2(
             catalog
             for object_kind, catalog in (
                 (ObjectKind.TABLE, "mz_tables"),
+                # Sources are listed as tables by get_table_names (pg_class).
+                (ObjectKind.TABLE, "mz_sources"),
                 (ObjectKind.VIEW, "mz_views"),
                 (ObjectKind.MATERIALIZED_VIEW, "mz_materialized_views"),
             )
